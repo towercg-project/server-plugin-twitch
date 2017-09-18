@@ -1,0 +1,59 @@
+{
+  "name": "@towercg-plugins/twitch-server",
+  "version": "0.0.1",
+  "main": "dist",
+  "license": "AGPL-3.0",
+  "engines": {
+    "node": ">= 8.0.0"
+  },
+  "scripts": {
+    "build": "npx babel src -d dist",
+    "watch": "yarn build --watch",
+    "test": "npx jest"
+  },
+  "devDependencies": {
+    "babel-cli": "^6.0.0",
+    "babel-core": "^6.26.0",
+    "babel-jest": "^21.0.2",
+    "babel-plugin-transform-class-properties": "^6.24.1",
+    "babel-preset-env": "^1.6.0",
+    "jest": "^21.1.0"
+  },
+  "peerDependencies": {
+    "@towercg/server": "^0.0.1",
+    "redux": "^3.7.2"
+  },
+  "dependencies": {
+    "lodash": "^4.17.4",
+    "redux": "^3.7.2"
+  },
+  "babel": {
+    "presets": [
+      [
+        "env",
+        {
+          "targets": {
+            "node": "8.0.0"
+          }
+        }
+      ]
+    ],
+    "plugins": [
+      [
+        "transform-class-properties",
+        {
+          "spec": true
+        }
+      ]
+    ]
+  },
+  "jest": {
+    "globals": {
+      "__DEV__": true,
+      "__TEST__": true
+    },
+    "testPathIgnorePatterns": [
+      "<rootDir>/src"
+    ]
+  }
+}
