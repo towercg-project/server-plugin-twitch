@@ -1,6 +1,6 @@
 {
   "name": "@towercg-plugins/twitch-server",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "main": "dist",
   "license": "AGPL-3.0",
   "engines": {
@@ -24,8 +24,12 @@
     "redux": "^3.7.2"
   },
   "dependencies": {
+    "bloom-filter": "^0.2.0",
+    "fs-extra": "^4.0.2",
     "lodash": "^4.17.4",
-    "redux": "^3.7.2"
+    "redux": "^3.7.2",
+    "tmi.js": "^1.2.1",
+    "twitch-api-v5": "^2.0.2"
   },
   "babel": {
     "presets": [
