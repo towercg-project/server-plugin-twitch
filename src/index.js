@@ -145,9 +145,15 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
       this.emit("hosted", { channel, username, viewers });
     });
 
+    twitch.on("subscription", (channel, username, method, message, userstate) => {
+      pluginConfig.logSubscriptions &&
+        this.logger.info(`Subscribed: ${channel} subscribed to by ${username}.`);
+      this.emit("subscription", { channel, username, displayName: userstate['display-name'], message, userstate, method });
+    });
+
     twitch.on("resub", (channel, username, months, message, userstate, methods) => {
       pluginConfig.logSubscriptions &&
-        this.logger.info(`Subscribed: ${channel} subscribed to by ${username} (${months} months).`);
+        this.logger.info(`Resubscribed: ${channel} subscribed to by ${username} (${months} months).`);
       this.emit("resub", { channel, username, displayName: userstate['display-name'], months, message, userstate, methods });
     });
 
