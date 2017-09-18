@@ -1,11 +1,7 @@
 import { combineReducers } from 'redux';
 
-function pluginReducer(state = {}, action) {
-  switch (action.type) {
-    default:
-      return state;
-  }
-}
+import { ReducerHelpers as RH } from '@towercg/server';
 
-// export const pluginReducer = combineReducers({
-// });
+export const pluginReducer = combineReducers({
+  channels: RH.keyedSetter("twitch.setChannelInfo", "twitch.resetChannels")
+});

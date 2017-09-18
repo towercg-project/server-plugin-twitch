@@ -14,8 +14,11 @@ export const twitchScopes =
   "channel_read channel_editor channel_commercial " +
   "channel_subscriptions chat_login channel_feed_read channel_feed_edit";
 
+const twitchChannelById = promisify(TwitchAPI.channels.channelByID);
 const twitchUsersByName = promisify(TwitchAPI.users.usersByName);
 const twitchFollowersForChannel = promisify(TwitchAPI.channels.followers);
+const twitchUpdateChannel = promisify(TwitchAPI.channels.updateChannel);
+const twitchRunCommercial = promisify(TwitchAPI.channels.startAd);
 
 export class TwitchPlugin extends TowerCGServer.ServerPlugin {
   static pluginName = "twitch";
@@ -27,8 +30,9 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     logSubscriptions: true,
     logCheers: true,
     apiDebug: false,
-    followerPolling: {
-      interval: 2000
+    polling: {
+      followerInterval: 2000,
+      channelInterval: 2000
     },
     connection: {
       reconnect: true,
@@ -49,13 +53,30 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     this._channelIds = {};
     this._followerFilters = {};
 
+    this._registerCommands();
     await this._configureTwitchApi();
-    this._twitchEvents = await this._configureTmi();
+    this._twitch = await this._configureTmi();
   }
 
   get connected() { return this._connected; }
   get channels() { return this._channels; }
   get channelIds() { return this._channelIds; }
+
+  async _registerCommands() {
+    this.registerCommand("runCommercial", async ({channel, duration}) => {
+      const channelID = this._channelIds[channel];
+      await twitchRunCommercial({ channelID, duration });
+
+      return { ok: true };
+    });
+
+    this.registerCommand("updateChannel", async ({channel, options}) => {
+      const result = await twitchUpdateChannel(_.merge({}, options, { channelID: this._channelIds[channel] }));
+      await this._fetchChannelInfo(channel);
+
+      return result;
+    });
+  }
 
   async _configureTwitchApi() {
     const {identity} = this.pluginConfig;
@@ -124,7 +145,8 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
       this.logger.debug(`Joined room ${channel}.`);
       twitch.say(channel, pluginConfig.connection.connectText);
 
-      this._configureFollowPoller(twitch, channel);
+      this._startChannelPoller(channel);
+      this._startFollowPoller(twitch, channel);
 
       this.emit('roomstate', { channel, state });
     });
@@ -168,6 +190,26 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
   async _configureSelfEvents() {
     const {pluginConfig} = this;
 
+    this.on('stateChanged', ({oldState, newState}) => {
+      for (let channel of this.channels) {
+        const oldStatus = _.get(oldState, ["channels", channel, "status"]);
+        const newStatus = _.get(newState, ["channels", channel, "status"]);
+
+        if (oldStatus !== newStatus) {
+          this.logger.info(`[${channel}]: status changed to '${newStatus}'.`);
+          this.emit("statusChanged", { oldStatus, newStatus });
+        }
+
+        const oldGame = _.get(oldState, ["channels", channel, "game"]);
+        const newGame = _.get(newState, ["channels", channel, "game"]);
+
+        if (oldGame !== newGame) {
+          this.logger.info(`[${channel}]: game changed to '${newGame}'.`);
+          this.emit("gameChanged", { oldGame, newGame });
+        }
+      }
+    });
+
     this.on('newFollower', (event) => {
       const {user, channel} = event;
 
@@ -176,7 +218,14 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     });
   }
 
-  async _configureFollowPoller(twitch, channel) {
+  async _startChannelPoller(channel) {
+    setInterval(
+      async () => this._fetchChannelInfo(channel),
+      this.pluginConfig.polling.channelInterval
+    );
+  }
+
+  async _startFollowPoller(twitch, channel) {
     const channelId = this._channelIds[channel];
     if (!channelId) {
       throw new Error(`Couldn't get channel ID for ${channel}.`);
@@ -184,14 +233,13 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
 
     this.logger.debug(`Setting up follow polling for ${channel}.`);
 
-    const {followerPolling} = this.pluginConfig;
     this.logger.debug(`Configuring follower polling for ${channel}.`);
 
     await this._loadBloomFilter(channel);
 
     setInterval(
       async () => this._pollFollowers(channel, channelId),
-      followerPolling.interval
+      this.pluginConfig.polling.followerInterval
     );
   }
 
@@ -232,5 +280,18 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
 
       this.emit('newFollower', { channel, user });
     }
+  }
+
+  async _fetchChannelInfo(channel) {
+    const channelID = this._channelIds[channel];
+    const result = await twitchChannelById({ channelID });
+
+    this.dispatch({
+      type: "twitch.setChannelInfo",
+      key: channel,
+      payload: result
+    });
+
+    return result;
   }
 }
