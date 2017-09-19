@@ -11,9 +11,9 @@ import { client as TMIClient } from 'tmi.js';
 import { pluginReducer } from './reducer';
 
 export const twitchScopes =
-  "channel_read channel_editor channel_commercial " +
-  "channel_subscriptions chat_login channel_feed_read channel_feed_edit";
+  "channel_read channel_editor channel_commercial channel_subscriptions chat_login channel_feed_read channel_feed_edit";
 
+const twitchCheckToken = promisify(TwitchAPI.auth.checkToken);
 const twitchChannelById = promisify(TwitchAPI.channels.channelByID);
 const twitchUsersByName = promisify(TwitchAPI.users.usersByName);
 const twitchFollowersForChannel = promisify(TwitchAPI.channels.followers);
@@ -30,6 +30,7 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     logSubscriptions: true,
     logCheers: true,
     apiDebug: false,
+    chatDebug: false,
     polling: {
       followerInterval: 2000,
       channelInterval: 2000
@@ -62,16 +63,31 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
   get channels() { return this._channels; }
   get channelIds() { return this._channelIds; }
 
+  get oauthClientId() { return this.pluginConfig.identity.oauthClientId; }
+  get oauthToken() { return this.pluginConfig.identity.oauthToken; }
+
   async _registerCommands() {
-    this.registerCommand("runCommercial", async ({channel, duration}) => {
+    this.registerCommand("runCommercial", async (payload) => {
+      const {channel, duration} = payload;
+
       const channelID = this._channelIds[channel];
       await twitchRunCommercial({ channelID, duration });
 
       return { ok: true };
     });
 
-    this.registerCommand("updateChannel", async ({channel, options}) => {
-      const result = await twitchUpdateChannel(_.merge({}, options, { channelID: this._channelIds[channel] }));
+    this.registerCommand("updateChannel", async (payload) => {
+      const {channel, options} = payload;
+
+      const request = _.merge({}, options, {
+        auth: this.oauthToken,
+        channelID: this._channelIds[channel]
+      });
+      const result = await twitchUpdateChannel(request);
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
       await this._fetchChannelInfo(channel);
 
       return result;
@@ -79,8 +95,15 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
   }
 
   async _configureTwitchApi() {
-    const {identity} = this.pluginConfig;
-    TwitchAPI.clientID = identity.oauthClientId;
+    const {apiDebug, identity} = this.pluginConfig;
+    TwitchAPI.clientID = this.oauthClientId;
+    TwitchAPI.debug = apiDebug;
+
+    const checkResult = await twitchCheckToken({ auth: this.oauthToken });
+    if (!checkResult.token.valid) {
+      // TODO: also check against our scopes list to make sure we're supported.
+      throw new Error("OAuth token appears to be invalid. Re-validate and restart.");
+    }
 
     this._channelIds = await this._fetchChannelIds(this.channels);
   }
