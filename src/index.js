@@ -19,6 +19,7 @@ const twitchUsersByName = promisify(TwitchAPI.users.usersByName);
 const twitchFollowersForChannel = promisify(TwitchAPI.channels.followers);
 const twitchUpdateChannel = promisify(TwitchAPI.channels.updateChannel);
 const twitchRunCommercial = promisify(TwitchAPI.channels.startAd);
+const twitchSearchGames = promisify(TwitchAPI.search.games);
 
 export class TwitchPlugin extends TowerCGServer.ServerPlugin {
   static pluginName = "twitch";
@@ -47,13 +48,10 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     const {identity} = this.pluginConfig;
     this._channels = this.pluginConfig.channels || [`#${identity.username}`];
 
-    for (let channel of this.channels) {
-      fs.mkdirsSync(this.computeStoragePath(`twitch/${channel}`));
-    }
-
     this._channelIds = {};
     this._followerFilters = {};
 
+    this._ensureDirectories();
     this._registerCommands();
     await this._configureTwitchApi();
     this._twitch = await this._configureTmi();
@@ -65,6 +63,15 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
 
   get oauthClientId() { return this.pluginConfig.identity.oauthClientId; }
   get oauthToken() { return this.pluginConfig.identity.oauthToken; }
+
+  _ensureDirectories() {
+    for (let channel of this.channels) {
+      fs.mkdirsSync(this.computeStoragePath(`twitch/${channel}`));
+    }
+
+    fs.mkdirsSync(this.computeCachePath("twitch/games/data"));
+    fs.mkdirsSync(this.computeCachePath("twitch/games/boxart"));
+  }
 
   async _registerCommands() {
     this.registerCommand("runCommercial", async (payload) => {
@@ -307,14 +314,33 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
 
   async _fetchChannelInfo(channel) {
     const channelID = this._channelIds[channel];
-    const result = await twitchChannelById({ channelID });
+    const channelInfo = await twitchChannelById({ channelID });
+    channelInfo.gameInfo = await this._fetchGameInfo(channelInfo.game);
 
     this.dispatch({
       type: "twitch.setChannelInfo",
       key: channel,
-      payload: result
+      payload: channelInfo
     });
 
-    return result;
+    return channelInfo;
+  }
+
+  async _fetchGameInfo(gameName, checkGameCache = true) {
+    const cacheGameName = gameName.replace(" ", "___");
+    const cacheFilePath = this.computeCachePath(`twitch/games/data/${cacheGameName}.json`);
+
+    if (checkGameCache && await fs.exists(cacheFilePath)) {
+      return fs.readJson(cacheFilePath);
+    }
+
+    const searchResult = await twitchSearchGames({ query: gameName });
+    const game = searchResult.games[0];
+
+    if (game) {
+      fs.writeFile(cacheFilePath, JSON.stringify(game, null, 2));
+    }
+
+    return game;
   }
 }
