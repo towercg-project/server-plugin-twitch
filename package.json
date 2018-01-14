@@ -1,15 +1,19 @@
 {
   "name": "@towercg-plugins/twitch-server",
-  "version": "0.0.3",
+  "version": "0.1.0",
   "main": "dist",
   "license": "AGPL-3.0",
   "engines": {
     "node": ">= 8.0.0"
   },
   "scripts": {
-    "build": "npx babel src -d dist",
-    "watch": "yarn build --watch",
-    "test": "npx jest"
+    "console": "babel-node",
+    "test": "eslint src && jest dist",
+    "build": "babel --copy-files src -d dist",
+    "watch": "babel --watch --copy-files src -d dist",
+    "clean": "rm -rf dist",
+    "precommit": "npm run test",
+    "prepush": "npm run test"
   },
   "devDependencies": {
     "babel-cli": "^6.0.0",
@@ -20,7 +24,7 @@
     "jest": "^21.1.0"
   },
   "peerDependencies": {
-    "@towercg/server": "^0.0.1",
+    "@towercg/server": "~0.1.0",
     "redux": "^3.7.2"
   },
   "dependencies": {
@@ -29,7 +33,8 @@
     "lodash": "^4.17.4",
     "redux": "^3.7.2",
     "tmi.js": "^1.2.1",
-    "twitch-api-v5": "^2.0.2"
+    "twitch-api-v5": "^2.0.2",
+    "twitch-helix": "^1.0.7"
   },
   "babel": {
     "presets": [

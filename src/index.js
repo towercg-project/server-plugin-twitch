@@ -5,6 +5,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { promisify } from 'util';
 import TwitchAPI from 'twitch-api-v5';
+import TwitchHelix from 'twitch-helix';
 import BloomFilter from 'bloom-filter';
 import { client as TMIClient } from 'tmi.js';
 
@@ -54,7 +55,10 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     this._ensureDirectories();
     this._registerCommands();
     await this._configureTwitchApi();
-    this._twitch = await this._configureTmi();
+
+    const ret = await this._configureTwitchClients();
+    this._twitchTmi = ret.twitchTmi;
+    this._twitchHelix = ret.twitchHelix;
   }
 
   get connected() { return this._connected; }
@@ -73,7 +77,7 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     fs.mkdirsSync(this.computeCachePath("twitch/games/boxart"));
   }
 
-  async _registerCommands() {
+  _registerCommands() {
     this.registerCommand("runCommercial", async (payload) => {
       const {channel, duration} = payload;
 
@@ -101,6 +105,23 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     });
   }
 
+  registerHttpHandlers(router) {
+    router.get("/game/:id", (req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.send(JSON.stringify({ hello: "twitch" }));
+    });
+
+    router.get("/boxart/:id", (req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.send(JSON.stringify({ hello: "twitch" }));
+    });
+
+    router.get("/game-search/:query", (req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.send(JSON.stringify({ hello: "twitch" }));
+    });
+  }
+
   async _configureTwitchApi() {
     const {apiDebug, identity} = this.pluginConfig;
     TwitchAPI.clientID = this.oauthClientId;
@@ -115,7 +136,7 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     this._channelIds = await this._fetchChannelIds(this.channels);
   }
 
-  async _configureTmi() {
+  async _configureTwitchClients() {
     const {apiDebug, identity, connection} = this.pluginConfig;
 
     const config = {
@@ -129,14 +150,19 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
       logger: apiDebug ? this.logger.child({ api: "twitch" }) : undefined
     };
 
+    const twitchHelix = new TwitchHelix({
+      clientId: identity.oauthClientId,
+      clientSecret: identity.oauthToken
+    });
+
     this.logger.debug(`Setting up Twitch connector; username ${identity.username}, channels ${this.channels}.`);
 
-    const twitch = new TMIClient(config);
-    await this._configureTwitchEvents(twitch);
+    const twitchTmi = new TMIClient(config);
+    await this._configureTwitchEvents(twitchTmi);
     await this._configureSelfEvents();
 
-    twitch.connect();
-    return twitch;
+    twitchTmi.connect();
+    return { twitchTmi, twitchHelix };
   }
 
   async _fetchChannelIds(channels) {
