@@ -3,6 +3,7 @@ import * as TowerCGServer from '@towercg/server';
 import * as _ from 'lodash';
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import Loki from 'lokijs';
 import { promisify } from 'util';
 import TwitchAPI from 'twitch-api-v5';
 import TwitchHelix from 'twitch-helix';
@@ -10,6 +11,9 @@ import BloomFilter from 'bloom-filter';
 import { client as TMIClient } from 'tmi.js';
 
 import { pluginReducer } from './reducer';
+
+import * as TwitchHttp from './http';
+import * as TwitchHelpers from './helpers';
 
 export const twitchScopes =
   "channel_read channel_editor channel_commercial channel_subscriptions chat_login channel_feed_read channel_feed_edit";
@@ -42,6 +46,10 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
       connectText: "TowerCG connected."
     },
     identity: {},
+    gameDatabase: {
+      ttl: 86400,
+      desiredBoxartHeightPx: 720
+    },
     debounce: true
   };
 
@@ -53,12 +61,18 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     this._followerFilters = {};
 
     this._ensureDirectories();
-    this._registerCommands();
-    await this._configureTwitchApi();
+    this.db = this._initLoki();
 
-    const ret = await this._configureTwitchClients();
-    this._twitchTmi = ret.twitchTmi;
-    this._twitchHelix = ret.twitchHelix;
+    this._registerCommands();
+    this._twitchHelix = await this._configureTwitchApi();
+    this._twitchTmi = await this._configureTwitchClients();
+
+    Object.assign(this, TwitchHttp);
+    this.registerHttpHandlers = this.registerHttpHandlers.bind(this);
+
+    Object.assign(this, TwitchHelpers);
+    this.fetchGameById = this.fetchGameById.bind(this);
+    this.fetchGameByName = this.fetchGameByName.bind(this);
   }
 
   get connected() { return this._connected; }
@@ -68,13 +82,27 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
   get oauthClientId() { return this.pluginConfig.identity.oauthClientId; }
   get oauthToken() { return this.pluginConfig.identity.oauthToken; }
 
+  _initLoki() {
+    const loki = new Loki(this.computeStoragePath("db.json"), {
+      autosave: true,
+      autosaveInterval: 0,
+      autoload: true
+    });
+
+    ["games"].forEach((collectionName) => {
+      loki.getCollection(collectionName) || loki.addCollection(collectionName);
+    });
+
+    return loki;
+  }
+
   _ensureDirectories() {
     for (let channel of this.channels) {
-      fs.mkdirsSync(this.computeStoragePath(`twitch/${channel}`));
+      fs.mkdirsSync(this.computeStoragePath(`${channel}`));
     }
 
-    fs.mkdirsSync(this.computeCachePath("twitch/games/data"));
-    fs.mkdirsSync(this.computeCachePath("twitch/games/boxart"));
+    fs.mkdirsSync(this.computeCachePath("games"));
+    fs.mkdirsSync(this.computeCachePath("boxart"));
   }
 
   _registerCommands() {
@@ -105,23 +133,6 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     });
   }
 
-  registerHttpHandlers(router) {
-    router.get("/game/:id", (req, res) => {
-      res.setHeader('Content-Type', 'application/json');
-      res.send(JSON.stringify({ hello: "twitch" }));
-    });
-
-    router.get("/boxart/:id", (req, res) => {
-      res.setHeader('Content-Type', 'application/json');
-      res.send(JSON.stringify({ hello: "twitch" }));
-    });
-
-    router.get("/game-search/:query", (req, res) => {
-      res.setHeader('Content-Type', 'application/json');
-      res.send(JSON.stringify({ hello: "twitch" }));
-    });
-  }
-
   async _configureTwitchApi() {
     const {apiDebug, identity} = this.pluginConfig;
     TwitchAPI.clientID = this.oauthClientId;
@@ -133,7 +144,20 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
       throw new Error("OAuth token appears to be invalid. Re-validate and restart.");
     }
 
+    const twitchHelix = new TwitchHelix({
+      clientId: this.oauthClientId,
+      clientSecret: this.oauthToken
+    });
+    const twitchHelixLogger = this.logger.child({ source: "helix" });
+    twitchHelix.on("log-info", (message) => twitchHelixLogger.info(message));
+    twitchHelix.on("log-warn", (message) => twitchHelixLogger.warn(message));
+    twitchHelix.on("log-error", (message) => twitchHelixLogger.error(message));
+
+    // const helixCheckResult = await twitchHelix.sendApiRequest("");
+
     this._channelIds = await this._fetchChannelIds(this.channels);
+
+    return twitchHelix;
   }
 
   async _configureTwitchClients() {
@@ -150,19 +174,14 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
       logger: apiDebug ? this.logger.child({ api: "twitch" }) : undefined
     };
 
-    const twitchHelix = new TwitchHelix({
-      clientId: identity.oauthClientId,
-      clientSecret: identity.oauthToken
-    });
-
-    this.logger.debug(`Setting up Twitch connector; username ${identity.username}, channels ${this.channels}.`);
+    this.logger.info(`Setting up Twitch connector; username ${identity.username}, channels ${this.channels}.`);
 
     const twitchTmi = new TMIClient(config);
     await this._configureTwitchEvents(twitchTmi);
     await this._configureSelfEvents();
 
     twitchTmi.connect();
-    return { twitchTmi, twitchHelix };
+    return twitchTmi;
   }
 
   async _fetchChannelIds(channels) {
@@ -198,7 +217,7 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     });
 
     twitch.on('roomstate', (channel, state) => {
-      this.logger.debug(`Joined room ${channel}.`);
+      this.logger.info(`Joined room ${channel}.`);
       twitch.say(channel, pluginConfig.connection.connectText);
 
       this._startChannelPoller(channel);
@@ -300,7 +319,7 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
   }
 
   async _loadBloomFilter(channel) {
-    const filePath = this.computeStoragePath(`twitch/${channel}/followers.json`);
+    const filePath = this.computeStoragePath(`${channel}/followers.json`);
     if (await fs.exists(filePath)) {
       this._followerFilters[channel] = new BloomFilter(await fs.readJson(filePath));
     } else {
@@ -312,7 +331,7 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
 
   async _saveBloomFilter(channel) {
     const filter = this._followerFilters[channel] || BloomFilter.create(50000, 0.005);
-    const filePath = this.computeStoragePath(`twitch/${channel}/followers.json`);
+    const filePath = this.computeStoragePath(`${channel}/followers.json`);
     return fs.writeJson(filePath, filter.toObject());
   }
 
@@ -353,20 +372,23 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
   }
 
   async _fetchGameInfo(gameName, checkGameCache = true) {
-    const cacheGameName = gameName.replace(" ", "___");
-    const cacheFilePath = this.computeCachePath(`twitch/games/data/${cacheGameName}.json`);
-
-    if (checkGameCache && await fs.exists(cacheFilePath)) {
-      return fs.readJson(cacheFilePath);
-    }
-
-    const searchResult = await twitchSearchGames({ query: gameName });
-    const game = searchResult.games[0];
-
-    if (game) {
-      fs.writeFile(cacheFilePath, JSON.stringify(game, null, 2));
-    }
-
-    return game;
+    const ret = await this.fetchGameByName(gameName)
+    console.log("fetchgameInfo:", ret)
+    return ret
+    // const cacheGameName = gameName.replace(" ", "___");
+    // const cacheFilePath = this.computeCachePath(`games/${cacheGameName}.json`);
+    //
+    // if (checkGameCache && await fs.exists(cacheFilePath)) {
+    //   return fs.readJson(cacheFilePath);
+    // }
+    //
+    // const searchResult = await twitchSearchGames({ query: gameName });
+    // const game = searchResult.games[0];
+    //
+    // if (game) {
+    //   fs.writeFile(cacheFilePath, JSON.stringify(game, null, 2));
+    // }
+    //
+    // return game;
   }
 }
