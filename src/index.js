@@ -13,8 +13,7 @@ import * as TwitchBetterAPI from '@eropple/twitch-better-api';
 
 import { pluginReducer } from './reducer';
 
-import * as TwitchHttp from './http';
-import * as TwitchHelpers from './helpers';
+import TwitchHttp from './http';
 
 export const twitchScopes =
   "channel_read channel_editor channel_commercial channel_subscriptions chat_login channel_feed_read channel_feed_edit";
@@ -72,8 +71,8 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     this._twitchIRC = await this._configureTwitchIRC();
     this._twitchIRC.connect();
 
-    Object.assign(this, TwitchHttp);
-    this.registerHttpHandlers = this.registerHttpHandlers.bind(this);
+    console.log(TwitchHttp)
+    this.registerHttpHandlers = TwitchHttp.bind(this);
   }
 
   get twitch() { return this._twitch; }

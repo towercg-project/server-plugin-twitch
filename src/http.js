@@ -1,17 +1,7 @@
-export function registerHttpHandlers(router) {
-  router.get("/game/:id", async (req, res, next) => {
-    try {
-      res.setHeader('Content-Type', 'application/json');
-      res.json(this.fetchGameById(req.params.id));
-    } catch (e) {
-      next(e);
-    }
-  });
-
+export default function registerHttpHandlers(router) {
   router.get("/boxart/:id", async (req, res, next) => {
     try {
-      res.setHeader('Content-Type', 'application/json');
-      res.send(JSON.stringify({ hello: "twitch" }));
+      res.json({ hello: "twitch" });
     } catch (e) {
       next(e);
     }
@@ -19,8 +9,10 @@ export function registerHttpHandlers(router) {
 
   router.get("/game-search/:query", async (req, res, next) => {
     try {
-      res.setHeader('Content-Type', 'application/json');
-      res.send(JSON.stringify({ hello: "twitch" }));
+      const result =
+        await this.twitch.games.searchGames(req.params.query, !!req.params.live);
+
+      res.json(result);
     } catch (e) {
       next(e);
     }
