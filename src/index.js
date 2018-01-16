@@ -9,6 +9,7 @@ import TwitchAPI from 'twitch-api-v5';
 import TwitchHelix from 'twitch-helix';
 import BloomFilter from 'bloom-filter';
 import { client as TMIClient } from 'tmi.js';
+import * as TwitchBetterAPI from '@eropple/twitch-better-api';
 
 import { pluginReducer } from './reducer';
 
@@ -18,10 +19,6 @@ import * as TwitchHelpers from './helpers';
 export const twitchScopes =
   "channel_read channel_editor channel_commercial channel_subscriptions chat_login channel_feed_read channel_feed_edit";
 
-const twitchCheckToken = promisify(TwitchAPI.auth.checkToken);
-const twitchChannelById = promisify(TwitchAPI.channels.channelByID);
-const twitchUsersByName = promisify(TwitchAPI.users.usersByName);
-const twitchFollowersForChannel = promisify(TwitchAPI.channels.followers);
 const twitchUpdateChannel = promisify(TwitchAPI.channels.updateChannel);
 const twitchRunCommercial = promisify(TwitchAPI.channels.startAd);
 const twitchSearchGames = promisify(TwitchAPI.search.games);
@@ -40,6 +37,10 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     polling: {
       followerInterval: 2000,
       channelInterval: 2000
+    },
+    bloom: {
+      size: 1000000,
+      chance: 0.0005
     },
     connection: {
       reconnect: true,
@@ -64,17 +65,18 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     this.db = this._initLoki();
 
     this._registerCommands();
-    this._twitchHelix = await this._configureTwitchApi();
-    this._twitchTmi = await this._configureTwitchClients();
+    this._twitch = await this._configureTwitchApi();
+    this._channelIds = await this._fetchChannelIds();
+    (this._channelIds)
+
+    this._twitchIRC = await this._configureTwitchIRC();
+    this._twitchIRC.connect();
 
     Object.assign(this, TwitchHttp);
     this.registerHttpHandlers = this.registerHttpHandlers.bind(this);
-
-    Object.assign(this, TwitchHelpers);
-    this.fetchGameById = this.fetchGameById.bind(this);
-    this.fetchGameByName = this.fetchGameByName.bind(this);
   }
 
+  get twitch() { return this._twitch; }
   get connected() { return this._connected; }
   get channels() { return this._channels; }
   get channelIds() { return this._channelIds; }
@@ -138,29 +140,19 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     TwitchAPI.clientID = this.oauthClientId;
     TwitchAPI.debug = apiDebug;
 
-    const checkResult = await twitchCheckToken({ auth: this.oauthToken });
-    if (!checkResult.token.valid) {
-      // TODO: also check against our scopes list to make sure we're supported.
-      throw new Error("OAuth token appears to be invalid. Re-validate and restart.");
+    try {
+      const twitchApi = TwitchBetterAPI.connectWithUserAccessToken(
+        this.oauthToken, this.logger, {}
+      );
+
+      return twitchApi;
+    } catch (err) {
+      this.logger.error({ err }, "Error in configuring Twitch API.");
+      throw err;
     }
-
-    const twitchHelix = new TwitchHelix({
-      clientId: this.oauthClientId,
-      clientSecret: this.oauthToken
-    });
-    const twitchHelixLogger = this.logger.child({ source: "helix" });
-    twitchHelix.on("log-info", (message) => twitchHelixLogger.info(message));
-    twitchHelix.on("log-warn", (message) => twitchHelixLogger.warn(message));
-    twitchHelix.on("log-error", (message) => twitchHelixLogger.error(message));
-
-    // const helixCheckResult = await twitchHelix.sendApiRequest("");
-
-    this._channelIds = await this._fetchChannelIds(this.channels);
-
-    return twitchHelix;
   }
 
-  async _configureTwitchClients() {
+  async _configureTwitchIRC() {
     const {apiDebug, identity, connection} = this.pluginConfig;
 
     const config = {
@@ -176,58 +168,57 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
 
     this.logger.info(`Setting up Twitch connector; username ${identity.username}, channels ${this.channels}.`);
 
-    const twitchTmi = new TMIClient(config);
-    await this._configureTwitchEvents(twitchTmi);
+    const twitchIRC = new TMIClient(config);
+    await this._configureTwitchEvents(twitchIRC);
     await this._configureSelfEvents();
 
-    twitchTmi.connect();
-    return twitchTmi;
+    return twitchIRC;
   }
 
-  async _fetchChannelIds(channels) {
-    const users = channels.map((channel) => channel.replace("#", ""));
-    const result = await twitchUsersByName({ users });
+  async _fetchChannelIds() {
+    const users = this.channels.map((channel) => channel.replace("#", ""));
+    const result = await this.twitch.users.getUsersByLogin(users);
 
     const ret = {};
 
-    result.users.forEach((user) => {
-      const channelName = `#${user.name}`;
-      ret[channelName] = user._id;
+    Object.values(result).forEach((user) => {
+      const channelName = `#${user.login}`;
+      ret[channelName] = user.id;
     })
 
     return ret;
   }
 
-  async _configureTwitchEvents(twitch) {
+  async _configureTwitchEvents(twitchIRC) {
     const {pluginConfig} = this;
 
-    twitch.on('logon', () => {
-      this.logger.info("Logged into Twitch.");
+    twitchIRC.on('logon', () => {
+      this.logger.info("Logged into Twitch IRC.");
     });
 
-    twitch.on('connected', () => {
-      this.logger.info("Connected to Twitch.");
+    twitchIRC.on('connected', () => {
+      this.logger.info("Connected to Twitch IRC.");
       this._connected = true;
       this.emit('connected');
     });
 
-    twitch.on('disconnected', () => {
+    twitchIRC.on('disconnected', () => {
       this._connected = false;
       this.emit('disconnected');
     });
 
-    twitch.on('roomstate', (channel, state) => {
+    twitchIRC.on('roomstate', (channel, state) => {
       this.logger.info(`Joined room ${channel}.`);
-      twitch.say(channel, pluginConfig.connection.connectText);
+      twitchIRC.say(channel, pluginConfig.connection.connectText);
 
       this._startChannelPoller(channel);
-      this._startFollowPoller(twitch, channel);
+      this._startFollowPoller(channel);
 
       this.emit('roomstate', { channel, state });
     });
 
     ['chat', 'action', 'whisper', 'message'].forEach((eventName) => {
-      twitch.on(eventName, (channel, userstate, message, self) => {
+      twitchIRC.on(eventName, (channel, userstate, message, self) => {
         const displayName = userstate['display-name'];
 
         pluginConfig.debugMessages &&
@@ -236,25 +227,25 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
       });
     });
 
-    twitch.on("hosted", (channel, username, viewers) => {
+    twitchIRC.on("hosted", (channel, username, viewers) => {
       pluginConfig.logHosts &&
         this.logger.info(`Hosted: ${channel} now hosted by ${username} (${viewers} viewers).`);
       this.emit("hosted", { channel, username, viewers });
     });
 
-    twitch.on("subscription", (channel, username, method, message, userstate) => {
+    twitchIRC.on("subscription", (channel, username, method, message, userstate) => {
       pluginConfig.logSubscriptions &&
         this.logger.info(`Subscribed: ${channel} subscribed to by ${username}.`);
       this.emit("subscription", { channel, username, displayName: userstate['display-name'], message, userstate, method });
     });
 
-    twitch.on("resub", (channel, username, months, message, userstate, methods) => {
+    twitchIRC.on("resub", (channel, username, months, message, userstate, methods) => {
       pluginConfig.logSubscriptions &&
         this.logger.info(`Resubscribed: ${channel} subscribed to by ${username} (${months} months).`);
       this.emit("resub", { channel, username, displayName: userstate['display-name'], months, message, userstate, methods });
     });
 
-    twitch.on("cheer", (channel, userstate, message) => {
+    twitchIRC.on("cheer", (channel, userstate, message) => {
       pluginConfig.logCheers &&
         this.logger.info(`Cheer received on ${channel}, ${userstate.bits} bits.`);
 
@@ -289,7 +280,7 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
       const {user, channel} = event;
 
       pluginConfig.logFollows &&
-        this.logger.info(`[${channel}] New follower ${user.name} (${user._id})`);
+        this.logger.info(`[${channel}] New follower ${user.login} (${user.id})`);
     });
   }
 
@@ -300,7 +291,7 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     );
   }
 
-  async _startFollowPoller(twitch, channel) {
+  async _startFollowPoller(channel) {
     const channelId = this._channelIds[channel];
     if (!channelId) {
       throw new Error(`Couldn't get channel ID for ${channel}.`);
@@ -319,38 +310,50 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
   }
 
   async _loadBloomFilter(channel) {
+    const pluginConfig = this.pluginConfig;
     const filePath = this.computeStoragePath(`${channel}/followers.json`);
     if (await fs.exists(filePath)) {
       this._followerFilters[channel] = new BloomFilter(await fs.readJson(filePath));
     } else {
-      this._followerFilters[channel] = BloomFilter.create(50000, 0.005);
+      this._followerFilters[channel] =
+        BloomFilter.create(pluginConfig.bloom.size, pluginConfig.bloom.chance);
     }
 
     this._saveBloomFilter(channel);
   }
 
   async _saveBloomFilter(channel) {
-    const filter = this._followerFilters[channel] || BloomFilter.create(50000, 0.005);
+    const filter =
+      this._followerFilters[channel] ||
+      BloomFilter.create(pluginConfig.bloom.size, pluginConfig.bloom.chance);
     const filePath = this.computeStoragePath(`${channel}/followers.json`);
     return fs.writeJson(filePath, filter.toObject());
   }
 
   async _pollFollowers(channel, channelId) {
-    const result = await twitchFollowersForChannel({ channelID: channelId });
-    const follows = result.follows;
+    try {
+      const cursor = this.twitch.users.getUserFollowersCursor(channelId);
+      let data = await cursor.next();
 
-    await Promise.all(
-      follows.map((follow) => this._processFollower(channel, follow.user))
-    );
+      const followIds = data.map((f) => f.from_id);
+      const followers = Object.values(await this.twitch.users.getUsersById(followIds));
+
+      return Promise.all(
+        followers.map((follow) => this._processFollower(channel, follow))
+      );
+    } catch (err) {
+      this.logger.error({ err }, "Error polling followers.")
+      throw err;
+    }
   }
 
   async _processFollower(channel, user) {
     const filter = this._followerFilters[channel];
 
-    if (filter.contains(user._id)) {
-      this.logger.trace(`[${channel}] Old follower ${user.name} (${user._id})`);
+    if (filter.contains(user.id)) {
+      this.logger.trace(`[${channel}] Old follower ${user.login} (${user.id})`);
     } else {
-      filter.insert(user._id);
+      filter.insert(user.id);
       await this._saveBloomFilter(channel);
 
       this.emit('newFollower', { channel, user });
@@ -359,7 +362,7 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
 
   async _fetchChannelInfo(channel) {
     const channelID = this._channelIds[channel];
-    const channelInfo = await twitchChannelById({ channelID });
+    const channelInfo = await this.twitch.channels.getChannelById(channelID);
     channelInfo.gameInfo = await this._fetchGameInfo(channelInfo.game);
 
     this.dispatch({
@@ -371,24 +374,10 @@ export class TwitchPlugin extends TowerCGServer.ServerPlugin {
     return channelInfo;
   }
 
-  async _fetchGameInfo(gameName, checkGameCache = true) {
-    const ret = await this.fetchGameByName(gameName)
-    console.log("fetchgameInfo:", ret)
-    return ret
-    // const cacheGameName = gameName.replace(" ", "___");
-    // const cacheFilePath = this.computeCachePath(`games/${cacheGameName}.json`);
-    //
-    // if (checkGameCache && await fs.exists(cacheFilePath)) {
-    //   return fs.readJson(cacheFilePath);
-    // }
-    //
-    // const searchResult = await twitchSearchGames({ query: gameName });
-    // const game = searchResult.games[0];
-    //
-    // if (game) {
-    //   fs.writeFile(cacheFilePath, JSON.stringify(game, null, 2));
-    // }
-    //
-    // return game;
+  async _fetchGameInfo(gameName) {
+    return this.cache.json(`games/${gameName}`, async () => {
+      const games = await this.twitch.games.getGamesByName(gameName);
+      return games[gameName];
+    })
   }
 }

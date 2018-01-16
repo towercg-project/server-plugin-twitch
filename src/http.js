@@ -25,4 +25,12 @@ export function registerHttpHandlers(router) {
       next(e);
     }
   });
+
+  router.post("/commercial", async (req, res, next) => {
+    try {
+
+    } catch (e) {
+      next(e);
+    }
+  });
 }
